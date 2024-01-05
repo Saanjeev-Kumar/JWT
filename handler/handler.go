@@ -26,9 +26,6 @@ type Claim struct {
 
 var jwtKey = []byte("my_secret_key")
 
-var creds Credential
-var expirationTime = time.Now().Add(time.Minute * 1)
-
 func generateJWTtoken(w http.ResponseWriter, username string, expirationTime time.Time) (string, error) {
 
 	claim := &Claim{
@@ -45,17 +42,17 @@ func generateJWTtoken(w http.ResponseWriter, username string, expirationTime tim
 
 	// Finally we set client cookie for "token" as the JWT we just generated
 	// we also set an expirey time ehich is same as the token itself
-	fmt.Println("JWT TOKEN:", tokenString)
+
 	return tokenString, err
 
 }
 
 func Signin(w http.ResponseWriter, r *http.Request) {
-
+	var creds Credential
+	expirationTime := time.Now().Add(time.Minute * 5)
 	err := json.NewDecoder(r.Body).Decode(&creds)
 
 	if err != nil {
-		fmt.Println("eroor---->1")
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -77,9 +74,7 @@ func Signin(w http.ResponseWriter, r *http.Request) {
 		Value:   token,
 		Expires: expirationTime,
 	})
-	fmt.Printf("%s Logged in successfully \n", creds.UserName)
 	w.Write([]byte(fmt.Sprintf("%s Logged in successfully", creds.UserName)))
-	//eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVc2VybmFtZSI6InVzZXIxIiwiZXhwIjoxNzA0NDUyMDUzfQ.UGv8rrucjgJg9WsQVDGe9a92CUot0kMIDOSoOPRZLvk
 }
 
 func Welcome(w http.ResponseWriter, r *http.Request) {
@@ -97,12 +92,9 @@ func Welcome(w http.ResponseWriter, r *http.Request) {
 
 	// initialize a new instance of claim
 
-	fmt.Println("token---------->", tknStr)
 	claim := &Claim{}
-	fmt.Println("Before Parse WELOCME", jwtKey)
 
 	tkn, err := jwt.ParseWithClaims(tknStr, claim, func(t *jwt.Token) (interface{}, error) {
-		fmt.Println(jwtKey)
 		return jwtKey, nil
 	})
 
@@ -119,65 +111,67 @@ func Welcome(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	fmt.Printf("Welcome %s ! \n", claim.Username)
+
 	w.Write([]byte(fmt.Sprintf("Welcome %s !", claim.Username)))
 }
 
 func Refresh(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Refresh")
+	cookie, err := r.Cookie("token")
 
-	cookie, _ := r.Cookie("token")
-	if cookie == nil {
-		fmt.Println("NO COOKIE Admin Side")
-		err := json.NewDecoder(r.Body).Decode(&creds)
-
-		token, err := generateJWTtoken(w, creds.UserName, expirationTime)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-
-		http.SetCookie(w, &http.Cookie{
-			Name:    "token",
-			Value:   token,
-			Expires: expirationTime,
-		})
-
-		w.Write([]byte(fmt.Sprintln("Please Refresh within the given time limit (i.e.) 1 minute here after that Token will expire and will create a new token")))
-	} else {
-		tknStr := cookie.Value
-		fmt.Println("token---------->", tknStr)
-		claim := &Claim{}
-		fmt.Println("Before Claim", claim)
-
-		_, err := jwt.ParseWithClaims(tknStr, claim, func(t *jwt.Token) (interface{}, error) {
-			fmt.Println("=====", jwtKey)
-			return jwtKey, nil
-		})
-		fmt.Println("Expire Claim Tire", claim.ExpiresAt.Time)
-		if time.Until(claim.ExpiresAt.Time) > 5*time.Second {
-			fmt.Println("END")
-			w.WriteHeader(http.StatusBadRequest)
+	if err != nil {
+		if err == http.ErrNoCookie {
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		fmt.Println("----------------------4-----------------")
-		claim.ExpiresAt = jwt.NewNumericDate(expirationTime)
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claim)
-
-		tokenStr, err := token.SignedString(jwtKey)
-		fmt.Println("NEW token---------->", tokenStr)
-		fmt.Println("----------------------5-----------------")
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		fmt.Println("----------------------6-----------------")
-		http.SetCookie(w, &http.Cookie{
-			Name:    "token",
-			Value:   tokenStr,
-			Expires: expirationTime,
-		})
-		w.Write([]byte(fmt.Sprintln("Refreshed Successfully within timelimit")))
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
+
+	tknStr := cookie.Value
+	claim := &Claim{}
+
+	tkn, err := jwt.ParseWithClaims(tknStr, claim, func(t *jwt.Token) (interface{}, error) {
+		return jwtKey, nil
+	})
+	if err != nil {
+		if err == jwt.ErrSignatureInvalid {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}
+
+	if !tkn.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	// untill this point code was same
+	// In this case a new token will only be issued only enough time is elapsed
+	// In this case new token will only be issued if the ild token is within
+	// 30 second of expiration.Otherwise,return a bad request status
+
+	if time.Until(claim.ExpiresAt.Time) > 30*time.Second {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	expirationTime := time.Now().Add(time.Minute * 5)
+	claim.ExpiresAt = jwt.NewNumericDate(expirationTime)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claim)
+
+	tokenStr, err := token.SignedString(jwtKey)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:    "token",
+		Value:   tokenStr,
+		Expires: expirationTime,
+	})
 }
 
 func Logout(w http.ResponseWriter, r *http.Request) {
